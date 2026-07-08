@@ -109,40 +109,59 @@ def normalize_answer(ans):
     
 @app.post("/answer-image")
 async def answer_image(request: Request):
-    body = await request.json()
-    img_b64 = body.get("image_base64", "")
-    question = body.get("question", "")
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text":
-                "You read charts, receipts, tables, invoices and pie charts EXACTLY.\n"
-                "Work in steps in a 'work' field, then give the final 'answer':\n"
-                "1. TRANSCRIBE every relevant label and number you see, one by one "
-                "(e.g. each bar's value, each receipt line, each table cell). Read "
-                "digits carefully; do not round or estimate.\n"
-                "2. If the question needs arithmetic (sum of all bars, grand total, "
-                "max/min of a column, total including tax), compute it step by step "
-                "and DOUBLE-CHECK the sum by re-adding.\n"
-                "3. Final 'answer': if NUMERIC, output ONLY the bare number — no "
-                "currency symbol, no thousands separators, no units, no words. Keep "
-                "decimals exactly as shown (e.g. a money total 4089.35 stays 4089.35). "
-                "If TEXT (e.g. the largest pie category), output it EXACTLY as written "
-                "in the image.\n"
-                "Return JSON: {\"work\": \"...\", \"answer\": \"...\"}.\n"
-                f"Question: {question}"},
-            {"type": "image_url",
-             "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"}},
-        ],
-    }]
-    try:
-        # Full gpt-4o at high image detail reads small chart/receipt labels accurately.
-        out = parse_json(await chat(messages, model=config.VISION_MODEL, max_tokens=2500))
-        ans = normalize_answer(out.get("answer", ""))
-    except Exception as e:
-        ans = ""
     global last_image_debug
-    last_image_debug = {"question": question, "raw_answer": out.get("answer", ""), "normalized": str(ans)}
+    ans = ""
+    try:
+        raw = await request.body()
+        try:
+            body = json.loads(raw)
+        except Exception as e:
+            last_image_debug = {"stage": "json_parse", "error": str(e), "raw_len": len(raw)}
+            return {"answer": ""}
+
+        img_b64 = body.get("image_base64", "") or body.get("image", "") or ""
+        question = body.get("question", "")
+
+        # some graders send a data: URL prefix already — strip it so we don't double it up
+        if img_b64.startswith("data:"):
+            img_b64 = img_b64.split(",", 1)[-1]
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text":
+                    "You read charts, receipts, tables, invoices and pie charts EXACTLY.\n"
+                    "Work in steps in a 'work' field, then give the final 'answer':\n"
+                    "1. TRANSCRIBE every relevant label and number you see, one by one "
+                    "(e.g. each bar's value, each receipt line, each table cell). Read "
+                    "digits carefully; do not round or estimate.\n"
+                    "2. If the question needs arithmetic (sum of all bars, grand total, "
+                    "max/min of a column, total including tax), compute it step by step "
+                    "and DOUBLE-CHECK the sum by re-adding.\n"
+                    "3. Final 'answer': if NUMERIC, output ONLY the bare number — no "
+                    "currency symbol, no thousands separators, no units, no words. Keep "
+                    "decimals exactly as shown (e.g. a money total 4089.35 stays 4089.35). "
+                    "If TEXT (e.g. the largest pie category), output it EXACTLY as written "
+                    "in the image.\n"
+                    "Return JSON: {\"work\": \"...\", \"answer\": \"...\"}.\n"
+                    f"Question: {question}"},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"}},
+            ],
+        }]
+
+        try:
+            out = parse_json(await chat(messages, model=config.VISION_MODEL, max_tokens=2500))
+            ans = normalize_answer(out.get("answer", ""))
+            last_image_debug = {"question": question, "raw_answer": out.get("answer", ""), "normalized": str(ans)}
+        except Exception as e:
+            last_image_debug = {"stage": "model_call", "error": str(e)}
+            ans = ""
+
+    except Exception as e:
+        last_image_debug = {"stage": "top_level", "error": str(e)}
+        ans = ""
+
     return {"answer": str(ans)}
 # ================= Q3 + Q7: /extract =================
 @app.post("/extract")
@@ -267,7 +286,11 @@ async def dynamic_extract(request: Request):
     return {k: coerce(out.get(k, None), schema[k]) for k in keys}
 
 # ================= Q6: /answer-audio =================
-last_debug_info = {}
+last_image_debug = {}
+
+@app.get("/debug-image")
+def get_debug_image():
+    return last_image_debug
 last_audio_bytes = b""          # raw audio the grader last sent (for download)
 last_audio_mime = "audio/wav"
 
