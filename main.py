@@ -88,24 +88,21 @@ async def root():
     return {"ok": True, "email": config.EMAIL}
 # ================= Q2: /answer-image =================
 def normalize_answer(ans):
-    """Clean a vision answer so it matches the grader's expected string.
-    Numeric answers: strip currency/commas/units, keep the bare number.
-    Text answers (e.g. a category name): keep as-is, trimmed."""
     s = str(ans).strip()
     if not s:
         return s
-    # If it looks numeric once symbols/commas/spaces are removed, return the number.
     cleaned = re.sub(r"[,\s]", "", s)
     cleaned = re.sub(r"[₹$€£%]", "", cleaned)
     m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
-    if m and re.fullmatch(r"[^\dA-Za-z]*-?\d[\d,.\s₹$€£%]*", s.strip()):
+    # count "real" letters outside the number itself
+    letters = re.sub(r"[^A-Za-z]", "", s)
+    if m and len(letters) <= 3:   # allow small stuff like "kg", but not "Total"
         num = m.group(0)
-        # drop trailing ".0" so 240.0 -> 240 (matches integer-style expected values)
         if "." in num:
             num = num.rstrip("0").rstrip(".")
         return num
     return s
-
+    
 @app.post("/answer-image")
 async def answer_image(request: Request):
     body = await request.json()
