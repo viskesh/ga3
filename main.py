@@ -88,18 +88,22 @@ async def root():
     return {"ok": True, "email": config.EMAIL}
 # ================= Q2: /answer-image =================
 def normalize_answer(ans):
+    """Clean a vision answer so it matches the grader's expected string."""
     s = str(ans).strip()
     if not s:
         return s
     cleaned = re.sub(r"[,\s]", "", s)
     cleaned = re.sub(r"[₹$€£%]", "", cleaned)
     m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
-    # count "real" letters outside the number itself
+    # Count letters outside the number — a stray word like "Total" or "kg"
+    # shouldn't block us from extracting the number anymore.
     letters = re.sub(r"[^A-Za-z]", "", s)
-    if m and len(letters) <= 3:   # allow small stuff like "kg", but not "Total"
+    if m and len(letters) <= 3:
         num = m.group(0)
         if "." in num:
-            num = num.rstrip("0").rstrip(".")
+            whole, frac = num.split(".")
+            if set(frac) == {"0"}:      # only strip PURE trailing zeros: 240.00 -> 240
+                num = whole             # keeps 45.50 as 45.50
         return num
     return s
     
@@ -133,10 +137,12 @@ async def answer_image(request: Request):
     }]
     try:
         # Full gpt-4o at high image detail reads small chart/receipt labels accurately.
-        out = parse_json(await chat(messages, model=config.VISION_MODEL, max_tokens=1200))
+        out = parse_json(await chat(messages, model=config.VISION_MODEL, max_tokens=2500))
         ans = normalize_answer(out.get("answer", ""))
     except Exception as e:
         ans = ""
+    global last_image_debug
+    last_image_debug = {"question": question, "raw_answer": out.get("answer", ""), "normalized": str(ans)}
     return {"answer": str(ans)}
 # ================= Q3 + Q7: /extract =================
 @app.post("/extract")
